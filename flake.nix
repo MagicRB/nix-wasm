@@ -127,8 +127,9 @@
         inherit wasmPkgs;
       } // foreach inputs.nixpkgs.legacyPackages (system: pkgs:
         let
-          wasmPackages = wasmPkgs pkgs { major = "9"; minor = "14"; };
-          haskellPackages = wasmPackages.haskell.packages.${ghc};
+          ghcVersion = { major = "9"; minor = "14"; };
+          wasmPackages = wasmPkgs pkgs ghcVersion;
+          haskellPackages = wasmPackages.haskell.packages."ghc${ghcVersion.major}${ghcVersion.minor}";
           example = hp: hp.callCabal2nix "example" ./example { };
         in
         {
@@ -136,7 +137,7 @@
             inherit haskellPackages;
             haskell.packages.${ghc} = example haskellPackages;
           };
-          packages.${system}.default = example;
+          packages.${system}.default = example haskellPackages;
           devShells.${system}.default = pkgs.mkShell {
             inputsFrom = [
               (haskellPackages.shellFor {
