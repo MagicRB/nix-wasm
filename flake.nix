@@ -11,18 +11,17 @@
   outputs = inputs:
     with builtins;
     let
-      inherit (inputs.nixpkgs) lib;
+      inherit (inputs."nixpkgs") lib;
       foreach = xs: f: with lib; foldr recursiveUpdate { } (
         if isList xs then map f xs
         else if isAttrs xs then mapAttrsToList f xs
         else throw "foreach: expected list or attrset but got ${typeOf xs}"
       );
-      importNixpkgs = system:
+      importNixpkgs = pkgs:
         let
-          pkgs = inputs.nixpkgs.legacyPackages.${system};
           patchedPkgs = pkgs.stdenvNoCC.mkDerivation {
             name = "patched-nixpkgs";
-            src = inputs.nixpkgs;
+            src = pkgs.path;
             patches = [
               ./nixpkgs-patches/generic-builder.patch
               ./nixpkgs-patches/with-packages-wrapper.patch
@@ -34,120 +33,127 @@
           };
         in
           import patchedPkgs;
-      ghc = "ghc914";
       targetPrefix = "wasm32-wasi-";
-      wasmPkgs = system: importNixpkgs system rec {
-        inherit system;
-        crossSystem = lib.systems.elaborate lib.systems.examples.wasi32 // {
-          isStatic = false;
-        };
-        config.replaceCrossStdenv = { buildPackages, baseStdenv }: buildPackages.stdenvNoCC.override {
-          inherit (baseStdenv)
-            buildPlatform
-            hostPlatform
-            targetPlatform;
-          cc = inputs.ghc-wasm-meta.packages.${system}.all_9_14 // {
-            isGNU = false;
-            isClang = true;
-            libc = inputs.ghc-wasm-meta.packages.${system}.wasi-sdk.overrideAttrs (attrs: { pname = attrs.name; version = "unstable1"; });
-            inherit targetPrefix;
-            bintools = inputs.ghc-wasm-meta.packages.${system}.all_9_14 // {
-              inherit targetPrefix;
-              bintools = inputs.ghc-wasm-meta.packages.${system}.all_9_14 // {
-                inherit targetPrefix;
-              };
+      wasmPkgs = pkgs: ghcVersion:
+        let
+          ghc-wasm-meta-all = inputs.ghc-wasm-meta.packages.${pkgs.stdenv.hostPlatform.system}."all_${ghcVersion.major}_${ghcVersion.minor}";
+          ghc-wasm-meta-cabal = inputs.ghc-wasm-meta.packages.${pkgs.stdenv.hostPlatform.system}."wasm32-wasi-cabal-${ghcVersion.major}_${ghcVersion.minor}";
+          ghc-wasm-meta-ghc = inputs.ghc-wasm-meta.packages.${pkgs.stdenv.hostPlatform.system}."wasm32-wasi-ghc-${ghcVersion.major}_${ghcVersion.minor}";
+        in
+          importNixpkgs pkgs rec {
+            inherit (pkgs.stdenv.hostPlatform) system;
+            crossSystem = lib.systems.elaborate lib.systems.examples.wasi32 // {
+              isStatic = false;
             };
-          };
-        };
-        overlays = [
-          (final: prev: {
-            cabal-install = inputs.ghc-wasm-meta.packages.${system}.wasm32-wasi-cabal-9_14;
-          })
-        ];
-        crossOverlays = [
-          (final: prev: {
-            cabal-install = inputs.ghc-wasm-meta.packages.${system}.wasm32-wasi-cabal-9_14;
-            haskell = (prev.haskell.override (old: {
-              buildPackages = lib.recursiveUpdate old.buildPackages {
-                haskell.compiler.${ghc} = inputs.ghc-wasm-meta.packages.${system}.wasm32-wasi-ghc-9_14 // {
+            config.replaceCrossStdenv = { buildPackages, baseStdenv }: buildPackages.stdenvNoCC.override {
+              inherit (baseStdenv)
+                buildPlatform
+                hostPlatform
+                targetPlatform;
+              cc = ghc-wasm-meta-all // {
+                isGNU = false;
+                isClang = true;
+                libc = inputs.ghc-wasm-meta.packages.${system}.wasi-sdk.overrideAttrs (attrs: { pname = attrs.name; version = "unstable1"; });
+                inherit targetPrefix;
+                bintools = ghc-wasm-meta-all // {
                   inherit targetPrefix;
-                };
-              };
-            })) // {
-              packageOverrides = lib.composeManyExtensions [
-                prev.haskell.packageOverrides
-                (hfinal: hprev: {
-                  ghcWithPackages = hprev.ghcWithPackages.override { installDocumentation = false; };
-                  ghc = inputs.ghc-wasm-meta.packages.${system}.wasm32-wasi-ghc-9_14 // {
-                    inherit (inputs.nixpkgs.legacyPackages.${system}.haskell.packages.${ghc}.ghc) version haskellCompilerName;
+                  bintools = ghc-wasm-meta-all // {
                     inherit targetPrefix;
                   };
-                  mkDerivation = args: (hprev.mkDerivation (args // {
-                    enableLibraryProfiling = false;
-                    enableSharedLibraries = true;
-                    enableStaticLibraries = false;
-                    enableExternalInterpreter = false;
-                    doBenchmark = false;
-                    doHaddock = false;
-                    doCheck = false;
-                    jailbreak = true;
-                    configureFlags = [
-                      "--with-ld=${prev.stdenv.cc.bintools}/bin/lld"
-                      "--with-ar=${prev.stdenv.cc.bintools}/bin/ar"
-                      "--with-strip=${prev.stdenv.cc.bintools}/bin/strip"
-                    ];
-                    #buildFlags = (args.buildFlags or []) ++ ["-v3"];
-                    setupHaskellDepends = (args.setupHaskellDepends or [ ]) ++ [
-                      # This executes the wasi-sdk setup-hook that sets toolchain env vars such as AR, CC, ...
-                      inputs.ghc-wasm-meta.packages.${system}.wasi-sdk
-                    ];
-                    preBuild = ''
-                      ${args.preBuild or ""}
-                      export NIX_CC=$CC
-                    '';
-                  })).overrideAttrs (attrs: {
-                    name = "${attrs.pname}-${targetPrefix}${attrs.version}";
-                    preSetupCompilerEnvironment = ''
-                      export CC_FOR_BUILD=$CC
-                    '';
-                  });
-                  zlib = prev.haskell.lib.compose.addBuildDepend hprev.zlib-clib hprev.zlib;
-                })
-              ];
+                };
+              };
             };
-          })
-        ];
-      };
+            overlays = [
+              (final: prev: {
+                cabal-install = ghc-wasm-meta-cabal;
+              })
+            ];
+            crossOverlays = [
+              (final: prev: {
+                cabal-install = ghc-wasm-meta-cabal;
+                haskell = (prev.haskell.override (old: {
+                  buildPackages = lib.recursiveUpdate old.buildPackages {
+                    haskell.compiler."ghc${ghcVersion.major}${ghcVersion.minor}" = ghc-wasm-meta-ghc // {
+                      inherit targetPrefix;
+                    };
+                  };
+                })) // {
+                  packageOverrides = lib.composeManyExtensions [
+                    prev.haskell.packageOverrides
+                    (hfinal: hprev: {
+                      ghcWithPackages = hprev.ghcWithPackages.override { installDocumentation = false; };
+                      ghc = ghc-wasm-meta-ghc // {
+                        inherit (pkgs.haskell.packages."ghc${ghcVersion.major}${ghcVersion.minor}".ghc) version haskellCompilerName;
+                        inherit targetPrefix;
+                      };
+                      mkDerivation = args: (hprev.mkDerivation (args // {
+                        enableLibraryProfiling = false;
+                        enableSharedLibraries = true;
+                        enableStaticLibraries = false;
+                        enableExternalInterpreter = false;
+                        doBenchmark = false;
+                        doHaddock = false;
+                        doCheck = false;
+                        jailbreak = true;
+                        configureFlags = [
+                          "--with-ld=${prev.stdenv.cc.bintools}/bin/lld"
+                          "--with-ar=${prev.stdenv.cc.bintools}/bin/ar"
+                          "--with-strip=${prev.stdenv.cc.bintools}/bin/strip"
+                        ];
+                        #buildFlags = (args.buildFlags or []) ++ ["-v3"];
+                        setupHaskellDepends = (args.setupHaskellDepends or [ ]) ++ [
+                          # This executes the wasi-sdk setup-hook that sets toolchain env vars such as AR, CC, ...
+                          inputs.ghc-wasm-meta.packages.${system}.wasi-sdk
+                        ];
+                        preBuild = ''
+                          ${args.preBuild or ""}
+                          export NIX_CC=$CC
+                        '';
+                      })).overrideAttrs (attrs: {
+                        name = "${attrs.pname}-${targetPrefix}${attrs.version}";
+                        preSetupCompilerEnvironment = ''
+                          export CC_FOR_BUILD=$CC
+                        '';
+                      });
+                      zlib = prev.haskell.lib.compose.addBuildDepend hprev.zlib-clib hprev.zlib;
+                    })
+                  ];
+                };
+              })
+            ];
+          };
     in
-    foreach inputs.nixpkgs.legacyPackages (system: pkgs:
-      let
-        wasmPackages = wasmPkgs system;
-        haskellPackages = wasmPackages.haskell.packages.${ghc};
-        example = hp: hp.callCabal2nix "example" ./example { };
-      in
       {
-        legacyPackages.${system} = lib.recursiveUpdate wasmPackages {
-          inherit haskellPackages;
-          haskell.packages.${ghc} = example haskellPackages;
-        };
-        packages.${system}.default = example;
-        devShells.${system}.default = pkgs.mkShell {
-          inputsFrom = [
-            (haskellPackages.shellFor {
-              packages = hp: [ (example hp) ];
-              nativeBuildInputs = with wasmPackages; [
-                cabal-install
-              ];
-            })
-            (pkgs.haskell.packages.${ghc}.shellFor {
-              packages = hp: [ (example hp) ];
-              nativeBuildInputs = with pkgs; [
-                cabal-install
-                haskell.packages.${ghc}.haskell-language-server
-              ];
-            })
-          ];
-        };
-      }
-    );
+        inherit wasmPkgs;
+      } // foreach inputs.nixpkgs.legacyPackages (system: pkgs:
+        let
+          wasmPackages = wasmPkgs pkgs { major = "9"; minor = "14"; };
+          haskellPackages = wasmPackages.haskell.packages.${ghc};
+          example = hp: hp.callCabal2nix "example" ./example { };
+        in
+        {
+          legacyPackages.${system} = lib.recursiveUpdate wasmPackages {
+            inherit haskellPackages;
+            haskell.packages.${ghc} = example haskellPackages;
+          };
+          packages.${system}.default = example;
+          devShells.${system}.default = pkgs.mkShell {
+            inputsFrom = [
+              (haskellPackages.shellFor {
+                packages = hp: [ (example hp) ];
+                nativeBuildInputs = with wasmPackages; [
+                  cabal-install
+                ];
+              })
+              (pkgs.haskell.packages.${ghc}.shellFor {
+                packages = hp: [ (example hp) ];
+                nativeBuildInputs = with pkgs; [
+                  cabal-install
+                  haskell.packages.${ghc}.haskell-language-server
+                ];
+              })
+            ];
+          };
+        }
+      );
 }
