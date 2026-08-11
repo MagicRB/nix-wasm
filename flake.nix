@@ -34,13 +34,15 @@
         in
           import patchedPkgs;
       targetPrefix = "wasm32-wasi-";
-      wasmPkgs = pkgs: ghcVersion:
+      wasmPkgs = { pkgs, ghcVersion, patchNixpkgs }:
         let
           ghc-wasm-meta-all = inputs.ghc-wasm-meta.packages.${pkgs.stdenv.hostPlatform.system}."all_${ghcVersion.major}_${ghcVersion.minor}";
           ghc-wasm-meta-cabal = inputs.ghc-wasm-meta.packages.${pkgs.stdenv.hostPlatform.system}."wasm32-wasi-cabal-${ghcVersion.major}_${ghcVersion.minor}";
           ghc-wasm-meta-ghc = inputs.ghc-wasm-meta.packages.${pkgs.stdenv.hostPlatform.system}."wasm32-wasi-ghc-${ghcVersion.major}_${ghcVersion.minor}";
+
+          importer = if patchNixpkgs then importNixpkgs else pkgs: import pkgs.path;
         in
-          importNixpkgs pkgs rec {
+          importer pkgs rec {
             inherit (pkgs.stdenv.hostPlatform) system;
             crossSystem = lib.systems.elaborate lib.systems.examples.wasi32 // {
               isStatic = false;
@@ -128,7 +130,7 @@
       } // foreach inputs.nixpkgs.legacyPackages (system: pkgs:
         let
           ghcVersion = { major = "9"; minor = "14"; };
-          wasmPackages = wasmPkgs pkgs ghcVersion;
+          wasmPackages = wasmPkgs { inherit pkgs ghcVersion; patchNixpkgs = true; };
           haskellPackages = wasmPackages.haskell.packages."ghc${ghcVersion.major}${ghcVersion.minor}";
           example = hp: hp.callCabal2nix "example" ./example { };
         in
