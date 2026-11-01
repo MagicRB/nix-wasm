@@ -95,7 +95,7 @@
                         doHaddock = false;
                         doCheck = false;
                         jailbreak = true;
-                        configureFlags = [
+                        configureFlags = (args.configureFlags or []) ++ [
                           "--with-ld=${prev.stdenv.cc.bintools}/bin/lld"
                           "--with-ar=${prev.stdenv.cc.bintools}/bin/ar"
                           "--with-strip=${prev.stdenv.cc.bintools}/bin/strip"
